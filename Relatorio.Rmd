@@ -1,0 +1,374 @@
+---
+title: "Relatório - Classificação de Atividades Físicas"
+author: "Rodrigo Tornisiello"
+date: "08/07/2021"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning=FALSE, error= FALSE, message=FALSE, cache = TRUE, fig.align = 'center')
+```
+
+## Definição do problema
+
+Deseja-se classsificar qual tipo de atividade cada individuo está executando por meio de dados coletados via sensores de *smartphone*.
+
+## Definição da base de dados
+
+Utilizou-se a base de dados: [*Human Activity Recognition Using Smartphones Data Set*](https://archive.ics.uci.edu/ml/datasets/human+activity+recognition+using+smartphones), disponibilizada no repositório de dados para Machine Learning UCI.
+
+Essa base consiste em medições de 561 variáveis de 30 indivíduos ao longo do tempo. As atividades executadas por esses indivíduos foram classificadas em 6 categorias: ANDANDO, SUBINDO ESCADAS, DESCENDO ESCADAS, SENTADO, EM PÉ, DEITADO. As medições foram feitas por celulares do modelo Samsung Galaxy S II.
+
+O próprio dataset já apresenta uma divisão de teste/treino que será respeitada. Mais detalhes sobre as bases podem ser encontrados no link.
+
+## Limpeza de dados
+
+É necessário um esforço de organização para esse dataset. Os dados vêm separados em vários arquivos diferentes:
+
+* 'features_info.txt': descreve as variáveis
+* 'features.txt': nomes das variáveis
+* 'activity_labels.txt': nomes das atividade
+* 'train/X_train.txt': dataset de treino
+* 'train/y_train.txt': classificação do dataset de treino
+* 'test/X_test.txt': dataset de teste
+* 'test/y_test.txt': classificação do dataset de teste
+
+Optou-se por trabalhar apenas com as variáveis referentes a média e desvio padrão por motivos de esforço computacional. Caso as previsões se mostrem ineficazes as variáveis escolhidas serão reconsideradas. 
+
+Ao final são mostradas as dimensões resultantes após a limpeza e organização dos dados.
+
+```{r}
+library(data.table)
+
+# carrega os nomes das variáveis
+all_features <- read.table("./UCI HAR Dataset/features.txt")[,2]
+# cria vetor booleano indicando as variáveis de média ou desvio padrão
+my_features <- grepl("mean|std", all_features)
+
+# carrega os nomes das atividades
+activity <- read.table("./UCI HAR Dataset/activity_labels.txt")[,2]
+
+# carrega os dados referentes a entrada, saida e indivíduo para teste
+X_test <- read.table("./UCI HAR Dataset/test/X_test.txt")
+y_test <- read.table("./UCI HAR Dataset/test/y_test.txt")
+subject_test <- read.table("./UCI HAR Dataset/test/subject_test.txt")
+
+# carrega os dados referentes a entrada, saida e indivíduo para treino
+X_train <- read.table("./UCI HAR Dataset/train/X_train.txt")
+y_train <- read.table("./UCI HAR Dataset/train/y_train.txt")
+subject_train <- read.table("./UCI HAR Dataset/train/subject_train.txt")
+
+# nomeia as colunas de acordo com os nomes das variáveis
+names(X_test) = all_features
+names(X_train) = all_features
+
+# filtra apenas as colunas desejadas por meio do vetor booleno
+X_test = X_test[,my_features]
+X_train = X_train[,my_features]
+
+# nomeia as ativiadades de acordo com os códigos informados
+y_test[,2] = activity[y_test[,1]]
+y_train[,2] = activity[y_train[,1]]
+
+# nomeia as colunas dos datasets de dados de saída e de indivíduos
+names(y_test) = c("Activity_ID", "Activity_name")
+names(y_train) = c("Activity_ID", "Activity_name")
+names(subject_test) = "Subject"
+names(subject_train) = "Subject"
+
+# junta as colunas de saída, indivíduo e entrada em um mesmo conjunto
+# o processo é repetido para teste e para treino
+test_df <- cbind(y_test,as.data.table(subject_test), X_test)
+train_df <- cbind(y_train,as.data.table(subject_train), X_train)
+
+# salva os dados organizados em arquivos .txt
+write.table(test_df, file = "./test.txt")
+write.table(train_df, file = "./train.txt")
+
+# dimensões da amostra de treino e teste
+dim(train_df)
+dim(test_df)
+
+#remove as variáveis
+rm(list = ls())
+```
+
+## Análise exploratória
+
+Durante a análise exploratória nota-se que:
+
+* O ID da atividade e o indivíduo foram interpretados como inteiros, quando na verdade se deseja que sejam variáveis categóricas, por isso essas variáveis são transformadas em `factor`. 
+
+* A variável nome da atividade será descartada na modelagem, por isso não há necessidade de transformação.
+
+* Não existem NAs no dataset de treino
+
+* As atividades não estão distribuídas igualmente, sendo assim a métrica Kappa já se mostra mais adequada do que a Acurácia. 
+
+* A quantidade de instâncias por indivíduos também não é uniforme.
+
+```{r, out.width="100%", fig.align = 'center'}
+library(ggplot2)
+library(RColorBrewer)
+library(ellipse)
+
+dataset <- read.table("./train.txt")
+
+# resumo sobre as variáveis
+str(dataset)
+
+# transformação em factor para ID de atividade e indivíduo
+dataset$Activity_ID = as.factor(dataset$Activity_ID)
+dataset$Subject = as.factor(dataset$Subject)
+
+# contagem de NAs
+colSums(is.na(dataset))
+
+# plota histograma por atividade
+ggplot(data.frame(dataset$Activity_name), 
+       aes(x=dataset$Activity_name, fill = dataset$Activity_name)) +
+        geom_bar() +
+        scale_fill_brewer(palette="Set2") +
+        scale_x_discrete(guide = guide_axis(n.dodge=2)) +
+        labs(title="Histograma por atividade") +
+        xlab("") +
+        labs(fill = "Atividade") +
+        ylab("Frequência")
+
+# plota histograma por indivíduo
+ggplot(data.frame(dataset$Subject), aes(x=dataset$Subject)) +
+        geom_bar() +
+        labs(title="Histograma por indivíduo") +
+        xlab("") +
+        ylab("Frequência")
+
+# Boxplot para primeira variável
+ggplot(dataset, aes(x=dataset$Activity_name, y=dataset$tBodyAcc.mean...X,
+                    fill=Activity_name)) + 
+        geom_boxplot() +
+        scale_fill_brewer(palette="Set2") +
+        scale_x_discrete(guide = guide_axis(n.dodge=2)) +
+        labs(title="Boxplot para variável tBodyAcc.mean.X") +
+        xlab("") +
+        ylab("tBodyAcc.mean.X") +
+        labs(fill = "Atividade")
+```
+
+## Modelagem
+
+Diversos modelos serão testados utilizando a métrica de performance Kappa. Os resultados são reproduzíveis pois a *seed* foi definida.
+
+Primeiramente busca-se variáveis com baixa variância na tentiva de diminuir a quantidade de variáveis. No entanto, nenhuma variável foi indicada com variância insignificante.
+
+Retira-se a coluna nome da atividade pois essa informação já consta como *factor* na coluna ID de atividade. 
+
+Não é necessário pré-processamento do tipo *scaling* pois a database selecionada já possuia essa transformação. Para avaliação de performance foi escolhido um método de *Cross Validation* repetido de 10 dobras e 3 repetições.
+
+Os algoritmos de previsão testados foram: *Linear Discriminant Analysis*, *K-nearest Neighbors*, *Support Vector Machine*, *Random Forest*, C5.0, e *Stochastic Gradient Boosting*. 
+
+```{r, out.width="50%", fig.align = 'center'}
+library(caret)
+
+dataset <- read.table("./train.txt")
+#dataset <-  read.table(text = rawToChar(obj))    para IBM Cloud
+
+# transformação em factor para ID de atividade e indivíduo
+dataset$Activity_ID = as.factor(dataset$Activity_ID)
+dataset$Subject = as.factor(dataset$Subject)
+
+# busca variáveis com variância baixa e filtra o dataset
+nzv_names <- nearZeroVar(dataset, names=TRUE)
+dataset <- dataset[, setdiff(names(dataset), nzv_names)]
+
+# retira a coluna referente ao nome da atividade e indivíduo
+dataset <- dataset[, -2:-3]
+
+# configura Cross Validation repetido de 10 dobras e 3 repetições
+# e métrica de desempenho
+control <- trainControl(method="repeatedcv", number=10, repeats = 3)
+metric <- "Accuracy"
+```
+
+```{r, out.width="50%", fig.align = 'center', eval = FALSE}
+# treina um modelo de LDA
+set.seed(1234)
+fit.lda <- train( Activity_ID ~ ., data = dataset, method = "lda", 
+              trControl = control, metric=metric)
+
+# treina um modelo de KNN
+set.seed(1234)
+fit.knn <- train( Activity_ID ~ ., data = dataset, method = "knn", 
+              trControl = control, metric=metric)
+
+# treina um modelo de SVM
+set.seed(1234)
+fit.svm <- train( Activity_ID ~ ., data = dataset, method = "svmRadial", 
+              trControl = control, metric=metric)
+
+# treina um modelo de RF
+set.seed(1234)
+fit.rf <- train( Activity_ID ~ ., data = dataset, method = "rf", 
+              trControl = control, metric=metric)
+
+# treina um modelo de C5.0
+set.seed(1234)
+fit.c50 <- train( Activity_ID ~ ., data = dataset, method = "C5.0", 
+              trControl = control, metric=metric)
+
+# treina um modelo de GBM
+set.seed(1234)
+fit.gbm <- train( Activity_ID ~ ., data = dataset, method = "gbm", 
+              trControl = control, metric=metric, verbose = FALSE)
+
+# salva os modelos treinados
+saveRDS(fit.lda, "./fittedLDA.rds")
+saveRDS(fit.knn, "./fittedKNN.rds")
+saveRDS(fit.svm, "./fittedSVM.rds")
+saveRDS(fit.rf, "./fittedRF.rds")
+saveRDS(fit.c50, "./fittedC50.rds")
+saveRDS(fit.gbm, "./fittedGBM.rds")
+```
+
+```{r, out.width="100%", fig.align = 'center'}
+
+library(lattice)
+
+# carrega os modelos treinados
+fit.lda <- readRDS("./Modelos/fittedLDA.rds")
+fit.knn <- readRDS("./Modelos/fittedKNN.rds")
+fit.svm <- readRDS("./Modelos/fittedSVM.rds")
+fit.rf  <- readRDS("./Modelos/fittedRF.rds")
+fit.c50 <- readRDS("./Modelos/fittedC50.rds")
+fit.gbm <- readRDS("./Modelos/fittedGBM.rds")
+
+# cria tabela resumo dos resultados
+results <- resamples(list(lda=fit.lda, knn=fit.knn, svm=fit.svm, 
+                          rf=fit.rf, c50=fit.c50, gbm=fit.gbm))
+summary(results)
+
+# plota boxplot dos resultados
+scales <- list(x=list(relation="free"), y=list(relation="free"))
+bwplot(results, scales=scales, metric = "Kappa"
+       , main = "Performance dos métodos testados")
+```
+
+## *Tuning* de hiperparâmetros
+
+Nota-se que os algoritmos de *boosting* se mostraram mais eficazes, registrando Kappa médio de 97,9%. Por isso, o algoritmo selecionado para prosseguir com a modelagem é o *boosting* C5.0.
+
+Para isso é necessário utilizar diretamente a biblioteca C5.0 e customizar a função de treinamento para permitir uma busca extensiva pelos melhores parâmetros.
+
+Para avaliação de performance é mantido o método de *Cross Validation* repetido de 10 dobras e 3 repetições.
+
+O melhor modelo então é definido com os parâmetros:
+
+* trials: 100
+* modelo: Rules
+* winnow: TRUE
+
+Nota: o trecho abaixo foi computado no IBM Cloud devido ao esforço computacional necessário. Os resultados são mostrados nesse relatório.
+
+```{r, out.width="100%", fig.align = 'center', eval = FALSE}
+library(caret)
+library(C50)
+
+ctrl <- trainControl(method = "repeatedcv",
+                           number = 10,
+                           repeats = 3, returnResamp="all")
+
+c50Grid <- expand.grid(.trials = c(1:9, (1:10)*10),
+                       .model = c("tree", "rules"),
+                       .winnow = c(TRUE, FALSE))
+#c50Grid
+set.seed(1234) 
+c5Fitvac <- train(Activity_ID ~ .,
+                  data = dataset,
+                  method = "C5.0",
+                  tuneGrid = c50Grid,
+                  trControl = ctrl,
+                  metric = "Accuracy", 
+                  importance=TRUE)  
+
+# melhor modelo
+c5Fitvac$finalModel$tuneValue
+# salva busca extensiva
+saveRDS(fit.gridC50, "./fittedgridC50.rds")
+# plota gráfico
+plot(c5Fitvac, main = "Busca de paraâmetros C5.0",
+     xlab = "Qt de iterações boost", ylab = "Acurácia")
+```
+
+
+![](GridSearch.png){width=70%}
+
+
+## Finalização do modelo
+
+Finalmente, basta treinar um modelo C5.0 com os parâmetros definidos, salvar o modelo e utilizá-lo para prever a amostra de teste, nunca antes vista pelo modelo.
+
+Antes é necessário realizar na amostra de teste o mesmo pré-processamento feito na amostra de treino.
+
+Observa-se que o modelo final tem perfomance de $Kappa = 88,5%$ para a amostra de teste, dessa forma considera-se que o objetivo de identificar com precisão a atividade desenvolvida foi alcançado com sucesso.
+
+```{r, out.width="100%", fig.align = 'center', eval = FALSE}
+
+dataset <- read.table("./train.txt")
+#dataset <-  read.table(text = rawToChar(obj))    para IBM Cloud
+
+# transformação em factor para ID de atividade e indivíduo
+dataset$Activity_ID = as.factor(dataset$Activity_ID)
+dataset$Subject = as.factor(dataset$Subject)
+
+# busca variáveis com variância baixa e filtra o dataset
+nzv_names <- nearZeroVar(dataset, names=TRUE)
+dataset <- dataset[, setdiff(names(dataset), nzv_names)]
+
+# retira a coluna referente ao nome da atividade e indivíduo
+dataset <- dataset[, -2:-3]
+
+c50Grid <- expand.grid(.trials = 100,
+                       .model = "rules",
+                       .winnow = TRUE)
+set.seed(1234) 
+c5Fitvac <- train(Activity_ID ~ .,
+                  data = dataset,
+                  method = "C5.0",
+                  tuneGrid = c50Grid,
+                  metric = "Accuracy", 
+                  importance=TRUE)
+
+saveRDS(c5Fitvac, "./finalC50.rds")
+```
+
+```{r, out.width="100%", fig.align = 'center'}
+
+dataset <- read.table("./train.txt")
+test <- read.table("./test.txt")
+#dataset <-  read.table(text = rawToChar(obj))    para IBM Cloud
+
+# transformação em factor para ID de atividade e indivíduo
+dataset$Activity_ID = as.factor(dataset$Activity_ID)
+dataset$Subject = as.factor(dataset$Subject)
+test$Activity_ID = as.factor(test$Activity_ID)
+test$Subject = as.factor(test$Subject)
+
+# busca variáveis com variância baixa e filtra o dataset
+nzv_names <- nearZeroVar(dataset, names=TRUE)
+dataset <- dataset[, setdiff(names(dataset), nzv_names)]
+test <- test[, setdiff(names(dataset), nzv_names)]
+
+# retira a coluna referente ao nome da atividade e indivíduo
+dataset <- dataset[, -2:-3]
+test <- test[, -2:-3]
+
+finalc50 <- readRDS("./Modelos/finalC50.rds")
+
+predictions <- predict(finalc50, test)
+confusionMatrix(predictions, test$Activity_ID)
+```
+
+## Referências
+
+[1] APA. Kuhn, M., & Johnson, K. (2018). Applied predictive modeling. Springer.
+
+[2] BROWNLEE, J. (2016). Machine Learning Mastery with R.
